@@ -62,6 +62,15 @@ namespace eCommerce.OrderMicroservice.ApiControllers
             return orders;
         }
 
+        //GET: /api/Orders/search/userid/{userID}
+        [HttpGet("search/userid/{userID}")]
+        public async Task<IEnumerable<OrderResponse?>> GetOrdersByUserID(Guid userID)
+        {
+            FilterDefinition<Order> filter = Builders<Order>.Filter.Eq(temp => temp.UserID, userID);
+
+            List<OrderResponse?> orders = await _ordersService.GetOrdersByCondition(filter);
+            return orders;
+        }
 
         //POST api/Orders
         [HttpPost]

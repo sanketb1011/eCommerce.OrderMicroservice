@@ -10,10 +10,10 @@ namespace DataAccessLayer
     {
         public static IServiceCollection AddDataAccessLayer(this IServiceCollection services, IConfiguration configuration)
         {
-            string connectionStringTemplate = configuration.GetConnectionString("MongoDb")!;
-            var connectionString =connectionStringTemplate
-                                    .Replace("$MONGO_HOST", Environment.GetEnvironmentVariable("MONGODB_HOST"))
-                                    .Replace("$MONGO_PORT", Environment.GetEnvironmentVariable("MONGODB_PORT"));  
+            string connectionString = configuration.GetConnectionString("MongoDb")!;
+            //var connectionString =connectionStringTemplate
+            //                        .Replace("$MONGO_HOST", Environment.GetEnvironmentVariable("MONGODB_HOST"))
+            //                        .Replace("$MONGO_PORT", Environment.GetEnvironmentVariable("MONGODB_PORT"));  
             services.AddSingleton<IMongoClient>(new MongoClient(connectionString));
             services.AddScoped<IMongoDatabase>(provider =>
             {

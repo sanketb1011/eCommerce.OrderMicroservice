@@ -1,5 +1,6 @@
 ﻿using AutoMapper;
 using BusinessLogicLayer.DTO;
+using BusinessLogicLayer.HttpClients;
 using BusinessLogicLayer.ServiceContracts;
 using DataAccessLayer.Entities;
 using DataAccessLayer.RepositoryContracts;
@@ -22,8 +23,16 @@ namespace BusinessLogicLayer.Services
         private readonly IValidator<OrderItemUpdateRequest> _orderItemUpdateRequestValidator;
         private readonly IMapper _mapper;
         private IOrdersRepository _ordersRepository;
+        private UsersMicroserviceClient _usersMicroserviceClient;
+        private ProductsMicroserviceClient _productsMicroserviceClient;
 
-        public OrdersService(IOrdersRepository ordersRepository, IMapper mapper, IValidator<OrderAddRequest> orderAddRequestValidator, IValidator<OrderItemAddRequest> orderItemAddRequestValidator, IValidator<OrderUpdateRequest> orderUpdateRequestValidator, IValidator<OrderItemUpdateRequest> orderItemUpdateRequestValidator)
+        public OrdersService(IOrdersRepository ordersRepository, IMapper mapper, 
+            IValidator<OrderAddRequest> orderAddRequestValidator,
+            IValidator<OrderItemAddRequest> orderItemAddRequestValidator, 
+            IValidator<OrderUpdateRequest> orderUpdateRequestValidator, 
+            IValidator<OrderItemUpdateRequest> orderItemUpdateRequestValidator,
+            UsersMicroserviceClient usersMicroserviceClient,
+            ProductsMicroserviceClient productsMicroserviceClient)
         {
             _orderAddRequestValidator = orderAddRequestValidator;
             _orderItemAddRequestValidator = orderItemAddRequestValidator;
@@ -31,9 +40,9 @@ namespace BusinessLogicLayer.Services
             _orderItemUpdateRequestValidator = orderItemUpdateRequestValidator;
             _mapper = mapper;
             _ordersRepository = ordersRepository;
+            _usersMicroserviceClient = usersMicroserviceClient;
+            _productsMicroserviceClient = productsMicroserviceClient;
         }
-
-
         public async Task<OrderResponse?> AddOrder(OrderAddRequest orderAddRequest)
         {
             //Check for null parameter
@@ -41,17 +50,15 @@ namespace BusinessLogicLayer.Services
             {
                 throw new ArgumentNullException(nameof(orderAddRequest));
             }
-
-
-            //Validate OrderAddRequest using Fluent Validations
+            
             ValidationResult orderAddRequestValidationResult = await _orderAddRequestValidator.ValidateAsync(orderAddRequest);
             if (!orderAddRequestValidationResult.IsValid)
             {
                 string errors = string.Join(", ", orderAddRequestValidationResult.Errors.Select(temp => temp.ErrorMessage));
                 throw new ArgumentException(errors);
             }
+            List<ProductDTO?> products = new List<ProductDTO?>();
 
-            //Validate order items using Fluent Validation
             foreach (OrderItemAddRequest orderItemAddRequest in orderAddRequest.OrderItems)
             {
                 ValidationResult orderItemAddRequestValidationResult = await _orderItemAddRequestValidator.ValidateAsync(orderItemAddRequest);
@@ -61,23 +68,29 @@ namespace BusinessLogicLayer.Services
                     string errors = string.Join(", ", orderItemAddRequestValidationResult.Errors.Select(temp => temp.ErrorMessage));
                     throw new ArgumentException(errors);
                 }
+                ProductDTO? product = await _productsMicroserviceClient.GetProductByProductID(orderItemAddRequest.ProductID);
+                if (product == null)
+                {
+                    throw new ArgumentException("Invalid Product ID");
+                }
+
+                products.Add(product);
             }
 
-            //TO DO: Add logic for checking if UserID exists in Users microservice
+            
+            UserDTO? user = await _usersMicroserviceClient.GetUserByUserID(orderAddRequest.UserID);
+            if (user == null)
+            {
+                throw new ArgumentException("Invalid User ID");
+            }
 
-
-            //Convert data from OrderAddRequest to Order
-            Order orderInput = _mapper.Map<Order>(orderAddRequest); //Map OrderAddRequest to 'Order' type (it invokes OrderAddRequestToOrderMappingProfile class)
-
-            //Generate values
+            Order orderInput = _mapper.Map<Order>(orderAddRequest);                        
             foreach (OrderItem orderItem in orderInput.OrderItems)
             {
                 orderItem.TotalPrice = orderItem.Quantity * orderItem.UnitPrice;
             }
             orderInput.TotalBill = orderInput.OrderItems.Sum(temp => temp.TotalPrice);
 
-
-            //Invoke repository
             Order? addedOrder = await _ordersRepository.AddOrder(orderInput);
 
             if (addedOrder == null)
@@ -85,9 +98,28 @@ namespace BusinessLogicLayer.Services
                 return null;
             }
 
-            OrderResponse addedOrderResponse = _mapper.Map<OrderResponse>(addedOrder); //Map addedOrder ('Order' type) into 'OrderResponse' type (it invokes OrderToOrderResponseMappingProfile).
+            OrderResponse addedOrderResponse = _mapper.Map<OrderResponse>(addedOrder);
+            if (addedOrderResponse != null)
+            {
+                foreach (OrderItemResponse orderItemResponse in addedOrderResponse.OrderItems)
+                {
+                    ProductDTO? productDTO = products.Where(temp => temp.ProductID == orderItemResponse.ProductID).FirstOrDefault();
 
-            return addedOrderResponse;
+                    if (productDTO == null)
+                        continue;
+
+                    _mapper.Map<ProductDTO, OrderItemResponse>(productDTO, orderItemResponse);
+                }
+            }
+            if (addedOrderResponse != null)
+            {
+                if (user != null)
+                {
+                    _mapper.Map<UserDTO, OrderResponse>(user, addedOrderResponse);
+                }
+            }
+
+            return addedOrderResponse;           
         }
 
 
@@ -109,6 +141,8 @@ namespace BusinessLogicLayer.Services
                 throw new ArgumentException(errors);
             }
 
+            List<ProductDTO> products = new List<ProductDTO>();
+
             //Validate order items using Fluent Validation
             foreach (OrderItemUpdateRequest orderItemUpdateRequest in orderUpdateRequest.OrderItems)
             {
@@ -119,9 +153,24 @@ namespace BusinessLogicLayer.Services
                     string errors = string.Join(", ", orderItemUpdateRequestValidationResult.Errors.Select(temp => temp.ErrorMessage));
                     throw new ArgumentException(errors);
                 }
+
+
+                //TO DO: Add logic for checking if ProductID exists in Products microservice
+                ProductDTO? product = await _productsMicroserviceClient.GetProductByProductID(orderItemUpdateRequest.ProductID);
+                if (product == null)
+                {
+                    throw new ArgumentException("Invalid Product ID");
+                }
+
+                products.Add(product);
             }
 
             //TO DO: Add logic for checking if UserID exists in Users microservice
+            UserDTO? user = await _usersMicroserviceClient.GetUserByUserID(orderUpdateRequest.UserID);
+            if (user == null)
+            {
+                throw new ArgumentException("Invalid User ID");
+            }
 
 
             //Convert data from OrderUpdateRequest to Order
@@ -144,6 +193,29 @@ namespace BusinessLogicLayer.Services
             }
 
             OrderResponse updatedOrderResponse = _mapper.Map<OrderResponse>(updatedOrder); //Map updatedOrder ('Order' type) into 'OrderResponse' type (it invokes OrderToOrderResponseMappingProfile).
+
+
+            //TO DO: Load ProductName and Category in OrderItem
+            if (updatedOrderResponse != null)
+            {
+                foreach (OrderItemResponse orderItemResponse in updatedOrderResponse.OrderItems)
+                {
+                    ProductDTO? productDTO = products.Where(temp => temp.ProductID == orderItemResponse.ProductID).FirstOrDefault();
+
+                    if (productDTO == null)
+                        continue;
+
+                    _mapper.Map<ProductDTO, OrderItemResponse>(productDTO, orderItemResponse);
+                }
+            }
+            if (updatedOrderResponse != null)
+            {
+                if (user != null)
+                {
+                    _mapper.Map<UserDTO, OrderResponse>(user, updatedOrderResponse);
+                }
+            }
+
 
             return updatedOrderResponse;
         }
@@ -172,6 +244,27 @@ namespace BusinessLogicLayer.Services
                 return null;
 
             OrderResponse orderResponse = _mapper.Map<OrderResponse>(order);
+            if (orderResponse != null)
+            {
+                foreach (OrderItemResponse orderItemResponse in orderResponse.OrderItems)
+                {
+                    ProductDTO? productDTO = await _productsMicroserviceClient.GetProductByProductID(orderItemResponse.ProductID);
+
+                    if (productDTO == null)
+                        continue;
+
+                    _mapper.Map<ProductDTO, OrderItemResponse>(productDTO, orderItemResponse);
+                }
+
+            }
+            if (orderResponse != null)
+            {
+                UserDTO? user = await _usersMicroserviceClient.GetUserByUserID(orderResponse.UserID);
+                if (user != null)
+                {
+                    _mapper.Map<UserDTO, OrderResponse>(user, orderResponse);
+                }
+            }
             return orderResponse;
         }
 
@@ -182,6 +275,29 @@ namespace BusinessLogicLayer.Services
 
 
             IEnumerable<OrderResponse?> orderResponses = _mapper.Map<IEnumerable<OrderResponse>>(orders);
+            foreach (OrderResponse? orderResponse in orderResponses)
+            {
+                if (orderResponse == null)
+                {
+                    continue;
+                }
+
+                foreach (OrderItemResponse orderItemResponse in orderResponse.OrderItems)
+                {
+                    ProductDTO? productDTO = await _productsMicroserviceClient.GetProductByProductID(orderItemResponse.ProductID);
+
+                    if (productDTO == null)
+                        continue;
+
+                    _mapper.Map<ProductDTO, OrderItemResponse>(productDTO, orderItemResponse);
+                }
+                UserDTO? user = await _usersMicroserviceClient.GetUserByUserID(orderResponse.UserID);
+                if (user != null)
+                {
+                    _mapper.Map<UserDTO, OrderResponse>(user, orderResponse);
+                }
+            }
+
             return orderResponses.ToList();
         }
 
@@ -192,6 +308,28 @@ namespace BusinessLogicLayer.Services
 
 
             IEnumerable<OrderResponse?> orderResponses = _mapper.Map<IEnumerable<OrderResponse>>(orders);
+            foreach (OrderResponse? orderResponse in orderResponses)
+            {
+                if (orderResponse == null)
+                {
+                    continue;
+                }
+
+                foreach (OrderItemResponse orderItemResponse in orderResponse.OrderItems)
+                {
+                    ProductDTO? productDTO = await _productsMicroserviceClient.GetProductByProductID(orderItemResponse.ProductID);
+
+                    if (productDTO == null)
+                        continue;
+
+                    _mapper.Map<ProductDTO, OrderItemResponse>(productDTO, orderItemResponse);
+                }
+                UserDTO? user = await _usersMicroserviceClient.GetUserByUserID(orderResponse.UserID);
+                if (user != null)
+                {
+                    _mapper.Map<UserDTO, OrderResponse>(user, orderResponse);
+                }
+            }
             return orderResponses.ToList();
         }
     }
